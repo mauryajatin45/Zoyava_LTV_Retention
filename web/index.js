@@ -4,6 +4,14 @@ import { readFileSync } from "fs";
 import express from "express";
 import serveStatic from "serve-static";
 
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 import shopify from "./shopify.js";
 
 import PrivacyWebhookHandlers from "./privacy.js";
@@ -21,6 +29,12 @@ const STATIC_PATH =
     : `${process.cwd()}/frontend/`;
 
 const app = express();
+
+// ── Global Request Logger ──────────────────────────────────────────────────
+app.use((req, res, next) => {
+  console.log(`[HTTP] ${req.method} ${req.url} - IP: ${req.headers['x-forwarded-for'] || req.socket.remoteAddress}`);
+  next();
+});
 
 // Set up Shopify authentication and webhook handling
 app.get(shopify.config.auth.path, shopify.auth.begin());

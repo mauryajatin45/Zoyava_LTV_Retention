@@ -3,8 +3,7 @@ import {
   Page, Layout, Card, DataTable, Badge, Banner,
   Text, Spinner, BlockStack, InlineStack, Box,
 } from '@shopify/polaris';
-import { useAppBridge } from '@shopify/app-bridge-react';
-import { authenticatedFetch } from '@shopify/app-bridge/utilities';
+// App Bridge v4 automatically intercepts native fetch, so we don't need utilities.
 
 // Human-readable names — update when variant IDs are mapped to product titles
 const VARIANT_NAMES = {
@@ -21,9 +20,6 @@ const VARIANT_NAMES = {
 };
 
 export default function Index() {
-  const app = useAppBridge();
-  const fetch = authenticatedFetch(app);
-
   const [ladder, setLadder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -36,10 +32,11 @@ export default function Index() {
         setLoading(false);
       })
       .catch((err) => {
-        setError('Failed to load configuration.');
+        console.error('[Frontend] Failed to fetch /api/ltv-config:', err);
+        setError('Failed to load configuration. Check browser console for details.');
         setLoading(false);
       });
-  }, [fetch]);
+  }, []);
 
   const tableRows = ladder
     ? Object.entries(ladder).map(([cycle, variantIds]) => [
