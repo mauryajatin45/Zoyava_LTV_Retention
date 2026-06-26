@@ -1,0 +1,20 @@
+client_id = "a04f2dc37d110b9ff1c2d68bee2e2ba1"
+name = "Zoyava LTV Retention"
+handle = "zoyava-ltv-retention"
+
+[access_scopes]
+scopes = "read_products,read_orders,read_customers"
+
+[auth]
+redirect_urls = [
+  "https://zoyava.project.terzettoo.com/auth/callback",
+  "https://zoyava.project.terzettoo.com/auth/shopify/callback",
+  "https://zoyava.project.terzettoo.com/api/auth/callback"
+]
+
+[webhooks]
+api_version = "2025-01"
+
+[build]
+automatically_update_urls_on_dev = true
+dev_store_url = ""
