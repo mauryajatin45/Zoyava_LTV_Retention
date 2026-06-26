@@ -1,26 +1,15 @@
 import { useEffect, useState } from 'react';
 import {
   Page, Layout, Card, DataTable, Badge, Banner,
-  Text, Spinner, BlockStack, InlineStack, Box,
+  Text, Spinner, BlockStack, InlineStack, Box, Thumbnail
 } from '@shopify/polaris';
 // App Bridge v4 automatically intercepts native fetch, so we don't need utilities.
 
-// Human-readable names — update when variant IDs are mapped to product titles
-const VARIANT_NAMES = {
-  48336835018993: 'Reward Chart',
-  48336838623473: 'Sticker Pack',
-  48212608712945: 'Free Bonus Bag',
-  48336838721777: 'Cycle 2 — Item A',
-  48336841441521: 'Cycle 2 — Item B',
-  48336845046001: 'Cycle 3 — Item A',
-  48336851009777: 'Cycle 4 — Item A',
-  48336854155505: 'Cycle 4 — Item B',
-  48336856056049: 'Cycle 5/6 — Item A',
-  48336855728369: 'Cycle 6 — Item B',
-};
+// Live variant data is now fetched directly from Shopify via GraphQL in the backend.
 
 export default function Index() {
   const [ladder, setLadder] = useState(null);
+  const [variantDetails, setVariantDetails] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -29,6 +18,7 @@ export default function Index() {
       .then((res) => res.json())
       .then((data) => {
         setLadder(data.ladder);
+        setVariantDetails(data.variantDetails || {});
         setLoading(false);
       })
       .catch((err) => {
@@ -42,12 +32,29 @@ export default function Index() {
     ? Object.entries(ladder).map(([cycle, variantIds]) => [
         <Text fontWeight="bold">Cycle {cycle}</Text>,
         <BlockStack gap="100">
-          {variantIds.map((id) => (
-            <InlineStack key={id} gap="200" align="start">
-              <Badge tone="success">Variant {id}</Badge>
-              <Text tone="subdued">{VARIANT_NAMES[id] || 'Unknown SKU'}</Text>
-            </InlineStack>
-          ))}
+          {variantIds.map((id) => {
+            const details = variantDetails[id];
+            const title = details?.productTitle || 'Unknown SKU';
+            const variantText = details?.variantTitle;
+            const image = details?.imageUrl;
+
+            return (
+              <InlineStack key={id} gap="200" align="start" blockAlign="center">
+                {image ? (
+                  <Thumbnail source={image} alt={title} size="small" />
+                ) : (
+                  <Box padding="200" background="bg-surface-secondary" borderRadius="100">
+                    <Text as="span" tone="subdued">No img</Text>
+                  </Box>
+                )}
+                <BlockStack>
+                  <Text fontWeight="bold">{title}</Text>
+                  {variantText && <Text tone="subdued">{variantText}</Text>}
+                  <Badge tone="success">Variant {id}</Badge>
+                </BlockStack>
+              </InlineStack>
+            );
+          })}
         </BlockStack>,
         <Badge tone="info">$0.00 Injected</Badge>,
         variantIds.length === 1
