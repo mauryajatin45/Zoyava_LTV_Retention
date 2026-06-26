@@ -41,6 +41,19 @@ router.post(
       return;
     }
 
+    // ── 3.5. Guard: Target Product Validation ────────────────────────────
+    const TARGET_PRODUCT_ID = '9636915151089';
+    const hasTargetProduct = charge.line_items?.some(
+      (item) => 
+        String(item.external_product_id) === TARGET_PRODUCT_ID || 
+        String(item.shopify_product_id) === TARGET_PRODUCT_ID
+    );
+
+    if (!hasTargetProduct) {
+      console.log('[LTV] Skipping charge: ZeoShield Gummies not found.');
+      return;
+    }
+
     // ── 4. Idempotency check ─────────────────────────────────────────────
     try {
       const processed = await hasBeenProcessed(chargeId);
