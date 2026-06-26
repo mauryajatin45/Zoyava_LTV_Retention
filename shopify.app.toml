@@ -1,6 +1,8 @@
 client_id = "a04f2dc37d110b9ff1c2d68bee2e2ba1"
 name = "Zoyava LTV Retention"
 handle = "zoyava-ltv-retention"
+application_url = "https://zoyava.project.terzettoo.com"
+embedded = true
 
 [access_scopes]
 scopes = "read_products,read_orders,read_customers"
