@@ -1,40 +1,49 @@
-import sqlite3 from 'sqlite3';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import mysql from 'mysql2/promise';
+import dotenv from 'dotenv';
+dotenv.config();
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dbPath = path.resolve(__dirname, '../../idempotency.sqlite');
-
-const db = new sqlite3.Database(dbPath, (err) => {
-  if (err) {
-    console.error('[IdempotencyStore] Error connecting to SQLite DB:', err.message);
-  } else {
-    console.log('[IdempotencyStore] Connected to SQLite database.');
-    db.run(
-      `CREATE TABLE IF NOT EXISTS processed_charges (
-        charge_id TEXT PRIMARY KEY,
-        processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )`
-    );
-  }
+// Create a connection pool instead of a single connection
+// This ensures connections are automatically managed and re-established
+const pool = mysql.createPool({
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASS,
+  database: process.env.DB_NAME,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
 });
+
+// Initialize table
+(async () => {
+  try {
+    const connection = await pool.getConnection();
+    console.log('[IdempotencyStore] Connected to MySQL database.');
+    
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS processed_charges (
+        charge_id VARCHAR(255) PRIMARY KEY,
+        processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    connection.release();
+  } catch (err) {
+    console.error('[IdempotencyStore] Error connecting to MySQL DB:', err.message);
+  }
+})();
 
 /**
  * Checks if a charge has already been processed.
  * @param {string|number} chargeId 
  * @returns {Promise<boolean>}
  */
-export function hasBeenProcessed(chargeId) {
-  return new Promise((resolve, reject) => {
-    db.get(
-      'SELECT charge_id FROM processed_charges WHERE charge_id = ?',
-      [String(chargeId)],
-      (err, row) => {
-        if (err) return reject(err);
-        resolve(!!row);
-      }
-    );
-  });
+export async function hasBeenProcessed(chargeId) {
+  const [rows] = await pool.query(
+    'SELECT charge_id FROM processed_charges WHERE charge_id = ?',
+    [String(chargeId)]
+  );
+  return rows.length > 0;
 }
 
 /**
@@ -42,15 +51,9 @@ export function hasBeenProcessed(chargeId) {
  * @param {string|number} chargeId 
  * @returns {Promise<void>}
  */
-export function markAsProcessed(chargeId) {
-  return new Promise((resolve, reject) => {
-    db.run(
-      'INSERT OR IGNORE INTO processed_charges (charge_id) VALUES (?)',
-      [String(chargeId)],
-      (err) => {
-        if (err) return reject(err);
-        resolve();
-      }
-    );
-  });
+export async function markAsProcessed(chargeId) {
+  await pool.query(
+    'INSERT IGNORE INTO processed_charges (charge_id) VALUES (?)',
+    [String(chargeId)]
+  );
 }
