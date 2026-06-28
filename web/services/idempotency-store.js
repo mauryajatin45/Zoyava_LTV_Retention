@@ -1,42 +1,71 @@
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
+import { logger } from './logger.js';
 dotenv.config();
 
-// Create a connection pool instead of a single connection
-// This ensures connections are automatically managed and re-established
+const TAG = '[IdempotencyStore]';
+
 const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
+  host:     process.env.DB_HOST,
+  user:     process.env.DB_USER,
   password: process.env.DB_PASS,
   database: process.env.DB_NAME,
   waitForConnections: true,
   connectionLimit: 10,
-  queueLimit: 0
+  queueLimit: 0,
+  // Keep-alive: reconnect automatically if the connection drops
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10000,
 });
 
-// Initialize table
+// Initialize table on startup
 (async () => {
   try {
     const connection = await pool.getConnection();
-    console.log('[IdempotencyStore] Connected to MySQL database.');
-    
+    logger.info(TAG, 'Connected to MySQL database');
+
     await connection.query(`
       CREATE TABLE IF NOT EXISTS processed_charges (
-        charge_id VARCHAR(255) PRIMARY KEY,
-        processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        charge_id    VARCHAR(255) PRIMARY KEY,
+        processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_processed_at (processed_at)
       )
     `);
-    
+
+    logger.info(TAG, 'processed_charges table verified/created');
     connection.release();
   } catch (err) {
-    console.error('[IdempotencyStore] Error connecting to MySQL DB:', err.message);
+    // CRITICAL: if the DB is unreachable at startup we log it loudly
+    // but do NOT crash the server — webhooks will fail safely via try/catch
+    logger.error(TAG, 'STARTUP: Could not connect to MySQL. Idempotency checks will fail until DB is reachable.', {
+      host: process.env.DB_HOST,
+      db:   process.env.DB_NAME,
+      error: err.message,
+    });
   }
 })();
 
 /**
- * Checks if a charge has already been processed.
- * @param {string|number} chargeId 
- * @returns {Promise<boolean>}
+ * Atomically checks AND marks a charge as processed in one query.
+ * Uses INSERT IGNORE so if two webhooks arrive simultaneously,
+ * only ONE will get rowsAffected=1. The other gets 0 and knows to skip.
+ *
+ * @param {string|number} chargeId
+ * @returns {Promise<boolean>} true = first time seen (process it), false = duplicate (skip)
+ */
+export async function claimCharge(chargeId) {
+  const [result] = await pool.query(
+    'INSERT IGNORE INTO processed_charges (charge_id) VALUES (?)',
+    [String(chargeId)]
+  );
+  // affectedRows === 1 means INSERT succeeded (first time)
+  // affectedRows === 0 means INSERT was ignored (duplicate)
+  return result.affectedRows === 1;
+}
+
+/**
+ * @deprecated Use claimCharge() instead — it's atomic.
+ * Kept for backward compatibility with any direct callers.
  */
 export async function hasBeenProcessed(chargeId) {
   const [rows] = await pool.query(
@@ -47,9 +76,7 @@ export async function hasBeenProcessed(chargeId) {
 }
 
 /**
- * Marks a charge as processed.
- * @param {string|number} chargeId 
- * @returns {Promise<void>}
+ * @deprecated Use claimCharge() instead — it's atomic.
  */
 export async function markAsProcessed(chargeId) {
   await pool.query(

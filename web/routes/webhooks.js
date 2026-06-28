@@ -2,117 +2,148 @@ import express from 'express';
 import { verifyRechargeWebhook } from '../middleware/verify-recharge-webhook.js';
 import { injectOnetime } from '../services/recharge-api.js';
 import { LTV_LADDER, MAX_CYCLE } from '../services/ltv-config.js';
-import { hasBeenProcessed, markAsProcessed } from '../services/idempotency-store.js';
+import { claimCharge } from '../services/idempotency-store.js';
+import { logger } from '../services/logger.js';
 
+const TAG = '[LTV Webhook]';
 const router = express.Router();
 
 /**
  * POST /webhooks/recharge/charge-paid
  *
- * Triggered by Recharge when a subscription charge is successfully paid.
- * Injects cycle-mapped gift variants into the customer's next upcoming charge.
+ * Triggered by Recharge when a subscription charge successfully processes.
+ * Injects the next cycle's gift variants as $0.00 onetimes on the address.
  */
-router.post(
-  '/recharge/charge-paid',
-  verifyRechargeWebhook,
-  async (req, res) => {
-    // ── 1. Immediately ACK Recharge (prevents retry timeout) ──────────────
-    res.status(200).json({ received: true });
+router.post('/recharge/charge-paid', verifyRechargeWebhook, async (req, res) => {
 
-    // ── 2. Extract fields from charge payload ────────────────────────────
-    const charge = req.body?.charge;
+  // ── 1. ACK Recharge immediately (must be within 5s or Recharge retries) ──
+  res.status(200).json({ received: true });
 
-    if (!charge) {
-      console.error('[LTV] Webhook payload missing charge object');
-      return;
-    }
+  logger.section(TAG, '📦 charge/paid webhook received');
 
-    const {
-      id: chargeId,
-      address_id: addressId,
-      orders_count: cycleNumber,   // 1 for first order, 2 for second, etc.
-      scheduled_at: chargeDate,
-      status,
-    } = charge;
+  // ── 2. Extract the charge object ─────────────────────────────────────────
+  const charge = req.body?.charge;
 
-    // ── 3. Guard: only process 'success' charges ─────────────────────────
-    if (status !== 'SUCCESS' && status !== 'success') {
-      console.log(`[LTV] Skipping charge ${chargeId} — status: ${status}`);
-      return;
-    }
-
-    // ── 3.5. Guard: Target Product Validation ────────────────────────────
-    const TARGET_PRODUCT_ID = '9636915151089';
-    const hasTargetProduct = charge.line_items?.some(
-      (item) => 
-        String(item.external_product_id) === TARGET_PRODUCT_ID || 
-        String(item.shopify_product_id) === TARGET_PRODUCT_ID
-    );
-
-    if (!hasTargetProduct) {
-      console.log('[LTV] Skipping charge: ZeoShield Gummies not found.');
-      return;
-    }
-
-    // ── 4. Idempotency check ─────────────────────────────────────────────
-    try {
-      const processed = await hasBeenProcessed(chargeId);
-      if (processed) {
-        console.log(`[LTV] Charge ${chargeId} already processed — skipping`);
-        return;
-      }
-      await markAsProcessed(chargeId);
-    } catch (dbError) {
-      console.error(`[LTV] Idempotency DB Error for charge ${chargeId}:`, dbError);
-      return; // Stop processing if we can't guarantee idempotency
-    }
-
-    // ── 5. Determine which gift cycle we are on ──────────────────────────
-    // Note: If cycleNumber is 1, the new logic says we skip backend injection
-    // and rely on frontend logic. But if cycleNumber is 1, it means order 1
-    // just succeeded, so the NEXT charge will be order 2 (Cycle 2 gifts).
-    // WAIT: The spec says: "If charge/paid fires and orders_count === 1, 
-    // you inject Cycle 2's variants into the next scheduled charge."
-    
-    // So if orders_count = N, we inject the gifts for Cycle N+1 into the next charge.
-    const targetCycle = cycleNumber + 1;
-    
-    if (targetCycle > MAX_CYCLE) {
-      console.log(`[LTV] Charge ${chargeId} — target cycle ${targetCycle} outside ladder range`);
-      return;
-    }
-
-    const variantIds = LTV_LADDER[targetCycle];
-    if (!variantIds || variantIds.length === 0) {
-      console.log(`[LTV] No variants mapped for cycle ${targetCycle}`);
-      return;
-    }
-
-    // ── 6. Calculate next charge date (same date as current charge — ──────
-    //       Recharge attaches it to the NEXT queued charge for that address)
-    const nextChargeDate = chargeDate
-      ? chargeDate.split('T')[0]   // "2025-08-15T00:00:00" → "2025-08-15"
-      : new Date().toISOString().split('T')[0];
-
-    // ── 7. Inject all variants as $0.00 onetimes ─────────────────────────
-    console.log(`[LTV] Processing charge ${chargeId} | orders_count ${cycleNumber} | targeting Cycle ${targetCycle} gifts`);
-    console.log(`[LTV] Address ${addressId} | Injecting variants: ${variantIds.join(', ')}`);
-
-    const results = await Promise.allSettled(
-      variantIds.map((variantId) =>
-        injectOnetime(addressId, variantId, nextChargeDate)
-      )
-    );
-
-    // ── 8. Log results ────────────────────────────────────────────────────
-    results.forEach((result, i) => {
-      if (result.status === 'fulfilled') {
-        console.log(`[LTV] ✓ Injected variant ${variantIds[i]} → onetime ID: ${result.value.onetime?.id}`);
-      } else {
-        console.error(`[LTV] ✗ Failed to inject variant ${variantIds[i]}:`, result.reason?.response?.data || result.reason?.message);
-      }
+  if (!charge) {
+    logger.error(TAG, 'Payload missing "charge" object — nothing to process', {
+      receivedKeys: Object.keys(req.body || {}),
     });
+    return;
   }
-);
+
+  const {
+    id:            chargeId,
+    address_id:    addressId,
+    orders_count:  cycleNumber,  // 1 = first order just paid, 2 = second, etc.
+    scheduled_at:  chargeDate,
+    status,
+  } = charge;
+
+  logger.info(TAG, 'Charge details', {
+    chargeId,
+    addressId,
+    status,
+    cycleNumber,
+    chargeDate,
+    lineItems: charge.line_items?.map((i) => ({
+      title:     i.title,
+      productId: i.external_product_id || i.shopify_product_id,
+    })),
+  });
+
+  // ── 3. Guard: status must be SUCCESS ─────────────────────────────────────
+  if (status !== 'SUCCESS' && status !== 'success') {
+    logger.info(TAG, `Skipping — status is "${status}", not SUCCESS`);
+    return;
+  }
+
+  // ── 4. Guard: must contain the ZeoShield product ─────────────────────────
+  const TARGET_PRODUCT_ID = '9636915151089';
+  const hasTargetProduct = charge.line_items?.some(
+    (item) =>
+      String(item.external_product_id) === TARGET_PRODUCT_ID ||
+      String(item.shopify_product_id)  === TARGET_PRODUCT_ID
+  );
+
+  if (!hasTargetProduct) {
+    logger.info(TAG, `Skipping — ZeoShield product (${TARGET_PRODUCT_ID}) not in line items`);
+    return;
+  }
+  logger.info(TAG, '✓ ZeoShield product confirmed');
+
+  // ── 5. Atomic idempotency claim — prevents duplicate gift injection ───────
+  let claimed = false;
+  try {
+    claimed = await claimCharge(chargeId);
+  } catch (dbErr) {
+    logger.error(TAG, 'DB error during idempotency claim — aborting to prevent duplicates', {
+      chargeId,
+      error: dbErr.message,
+    });
+    return;
+  }
+
+  if (!claimed) {
+    logger.warn(TAG, `Charge ${chargeId} already processed — skipping (idempotency guard)`);
+    return;
+  }
+  logger.info(TAG, `✓ Charge ${chargeId} claimed — proceeding with gift injection`);
+
+  // ── 6. Determine which gift cycle to inject ───────────────────────────────
+  // orders_count = N means order N just succeeded.
+  // We inject gifts for the NEXT order (cycle N+1).
+  const targetCycle = cycleNumber + 1;
+
+  if (targetCycle > MAX_CYCLE) {
+    logger.info(TAG, `Cycle ${targetCycle} is beyond MAX_CYCLE (${MAX_CYCLE}) — customer has received all ladder gifts`);
+    return;
+  }
+
+  const variantIds = LTV_LADDER[targetCycle];
+  if (!variantIds || variantIds.length === 0) {
+    logger.warn(TAG, `No variants mapped in LTV_LADDER for cycle ${targetCycle}`);
+    return;
+  }
+
+  logger.info(TAG, `🎁 Injecting Cycle ${targetCycle} gifts (order #${cycleNumber} just paid)`, {
+    targetCycle,
+    variantIds,
+    addressId,
+  });
+
+  // ── 7. Calculate the date for the next charge ─────────────────────────────
+  const nextChargeDate = chargeDate
+    ? chargeDate.split('T')[0]
+    : new Date().toISOString().split('T')[0];
+
+  logger.info(TAG, `Next charge date: ${nextChargeDate}`);
+
+  // ── 8. Inject all gifts (each has retry logic inside injectOnetime) ───────
+  const results = await Promise.allSettled(
+    variantIds.map((variantId) => injectOnetime(addressId, variantId, nextChargeDate))
+  );
+
+  // ── 9. Summary ────────────────────────────────────────────────────────────
+  let successCount = 0;
+  let failCount    = 0;
+
+  results.forEach((result, i) => {
+    if (result.status === 'fulfilled') {
+      successCount++;
+      logger.info(TAG, `✓ Gift injected`, {
+        variantId:  variantIds[i],
+        onetimeId:  result.value.onetime?.id,
+      });
+    } else {
+      failCount++;
+      logger.error(TAG, `Failed to inject gift`, {
+        variantId: variantIds[i],
+        error:     result.reason?.response?.data || result.reason?.message,
+      });
+    }
+  });
+
+  logger.info(TAG, `━━ Charge ${chargeId} complete: ${successCount} injected, ${failCount} failed ━━`);
+});
 
 export default router;
