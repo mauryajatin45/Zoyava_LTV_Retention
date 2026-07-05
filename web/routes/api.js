@@ -1,10 +1,12 @@
 import express from 'express';
 import shopify from '../shopify.js';
 import { LTV_LADDER } from '../services/ltv-config.js';
+import { LTV_LADDER_V3 } from '../services/ltv-config-v3.js';
+import { LTV_LADDER_V4 } from '../services/ltv-config-v4.js';
 
 const router = express.Router();
 
-// GET /api/ltv-config  →  Returns the LTV ladder JSON for the dashboard
+// GET /api/ltv-config  →  Returns all LTV ladder JSONs (Old, V3, V4) for the dashboard
 router.get('/ltv-config', async (req, res) => {
   const session = res.locals?.shopify?.session;
   console.log(`[API] GET /ltv-config requested by shop: ${session?.shop || 'unknown'}`);
@@ -14,14 +16,18 @@ router.get('/ltv-config', async (req, res) => {
   }
 
   try {
-    // 1. Extract all unique variant IDs from the ladder
+    // 1. Extract all unique variant IDs across all ladders
     const allVariantIds = new Set();
-    Object.values(LTV_LADDER).forEach(variants => {
-      variants.forEach(id => allVariantIds.add(id));
+    [LTV_LADDER, LTV_LADDER_V3, LTV_LADDER_V4].forEach((ladderObj) => {
+      if (ladderObj) {
+        Object.values(ladderObj).forEach((variants) => {
+          variants.forEach((id) => allVariantIds.add(String(id)));
+        });
+      }
     });
 
     const idsArray = Array.from(allVariantIds);
-    const gids = idsArray.map(id => `gid://shopify/ProductVariant/${id}`);
+    const gids = idsArray.map((id) => `gid://shopify/ProductVariant/${id}`);
 
     // 2. Fetch live data via GraphQL Bulk Nodes query
     const client = new shopify.api.clients.Graphql({ session });
@@ -59,11 +65,23 @@ router.get('/ltv-config', async (req, res) => {
       }
     });
 
-    res.status(200).json({ ladder: LTV_LADDER, variantDetails });
+    res.status(200).json({
+      ladder: LTV_LADDER,       // backwards compatibility
+      ladderOld: LTV_LADDER,
+      ladderV3: LTV_LADDER_V3,
+      ladderV4: LTV_LADDER_V4,
+      variantDetails
+    });
   } catch (error) {
     console.error('[API] Error fetching variant details:', error);
-    // Fallback gracefully so the UI still loads the ladder at least
-    res.status(200).json({ ladder: LTV_LADDER, variantDetails: {} });
+    // Fallback gracefully so the UI still loads the ladders
+    res.status(200).json({
+      ladder: LTV_LADDER,
+      ladderOld: LTV_LADDER,
+      ladderV3: LTV_LADDER_V3,
+      ladderV4: LTV_LADDER_V4,
+      variantDetails: {}
+    });
   }
 });
 

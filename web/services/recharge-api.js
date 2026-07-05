@@ -44,11 +44,11 @@ recharge.interceptors.response.use(
  * @param {number} variantId      - Shopify variant ID to inject
  * @param {string} nextChargeDate - ISO date string (YYYY-MM-DD) for scheduling
  */
-export async function injectOnetime(addressId, variantId, nextChargeDate) {
+export async function injectOnetime(addressId, variantId, nextChargeDate, quantity = 1) {
   const payload = {
     address_id: addressId,
     shopify_variant_id: variantId,
-    quantity: 1,
+    quantity: quantity,
     price: 0.00,
     next_charge_scheduled_at: nextChargeDate,
   };

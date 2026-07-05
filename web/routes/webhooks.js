@@ -62,7 +62,7 @@ router.post('/recharge/charge-paid', verifyRechargeWebhook, async (req, res) => 
   // ── 4. Product ID Inspection & Automatic Funnel Routing ──────────────────
   const TARGET_PRODUCT_ID_OLD = process.env.TARGET_PRODUCT_ID_OLD || '9636915151089';
   const TARGET_PRODUCT_ID_V3  = process.env.TARGET_PRODUCT_ID_V3  || '9656256463089';
-  const TARGET_PRODUCT_ID_V4  = process.env.TARGET_PRODUCT_ID_V4  || '9656256000000';
+  const TARGET_PRODUCT_ID_V4  = process.env.TARGET_PRODUCT_ID_V4  || '9656359256305';
 
   const hasV3Product = charge.line_items?.some(
     (item) =>
