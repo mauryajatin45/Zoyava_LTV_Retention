@@ -4,6 +4,8 @@ import { injectOnetime } from '../services/recharge-api.js';
 import { LTV_LADDER, MAX_CYCLE } from '../services/ltv-config.js';
 import { claimCharge } from '../services/idempotency-store.js';
 import { logger } from '../services/logger.js';
+import { executeV3Automation } from './webhooks-v3.js';
+import { executeV4Automation } from './webhooks-v4.js';
 
 const TAG = '[LTV Webhook]';
 const router = express.Router();
@@ -57,19 +59,42 @@ router.post('/recharge/charge-paid', verifyRechargeWebhook, async (req, res) => 
     return;
   }
 
-  // ── 4. Guard: must contain the ZeoShield product ─────────────────────────
-  const TARGET_PRODUCT_ID = '9636915151089';
+  // ── 4. Product ID Inspection & Automatic Funnel Routing ──────────────────
+  const TARGET_PRODUCT_ID_OLD = process.env.TARGET_PRODUCT_ID_OLD || '9636915151089';
+  const TARGET_PRODUCT_ID_V3  = process.env.TARGET_PRODUCT_ID_V3  || '9656256463089';
+  const TARGET_PRODUCT_ID_V4  = process.env.TARGET_PRODUCT_ID_V4  || '9656256000000';
+
+  const hasV3Product = charge.line_items?.some(
+    (item) =>
+      String(item.external_product_id) === TARGET_PRODUCT_ID_V3 ||
+      String(item.shopify_product_id)  === TARGET_PRODUCT_ID_V3
+  );
+  if (hasV3Product) {
+    logger.info(TAG, `✓ Zoyava Offer V3 Product (${TARGET_PRODUCT_ID_V3}) detected — routing to V3 automation`);
+    return await executeV3Automation(charge);
+  }
+
+  const hasV4Product = charge.line_items?.some(
+    (item) =>
+      String(item.external_product_id) === TARGET_PRODUCT_ID_V4 ||
+      String(item.shopify_product_id)  === TARGET_PRODUCT_ID_V4
+  );
+  if (hasV4Product) {
+    logger.info(TAG, `✓ Zoyava Offer V4 Product (${TARGET_PRODUCT_ID_V4}) detected — routing to V4 automation`);
+    return await executeV4Automation(charge);
+  }
+
   const hasTargetProduct = charge.line_items?.some(
     (item) =>
-      String(item.external_product_id) === TARGET_PRODUCT_ID ||
-      String(item.shopify_product_id)  === TARGET_PRODUCT_ID
+      String(item.external_product_id) === TARGET_PRODUCT_ID_OLD ||
+      String(item.shopify_product_id)  === TARGET_PRODUCT_ID_OLD
   );
 
   if (!hasTargetProduct) {
-    logger.info(TAG, `Skipping — ZeoShield product (${TARGET_PRODUCT_ID}) not in line items`);
+    logger.info(TAG, `Skipping — No known ZeoShield product (Old, V3, or V4) found in line items`);
     return;
   }
-  logger.info(TAG, '✓ ZeoShield product confirmed');
+  logger.info(TAG, '✓ Old ZeoShield production product confirmed — executing original production ladder');
 
   // ── 5. Atomic idempotency claim — prevents duplicate gift injection ───────
   let claimed = false;

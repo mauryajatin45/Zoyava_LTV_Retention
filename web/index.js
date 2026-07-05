@@ -20,6 +20,8 @@ process.on('unhandledRejection', (reason) => {
 import shopify from './shopify.js';
 import PrivacyWebhookHandlers from './privacy.js';
 import webhookRoutes from './routes/webhooks.js';
+import webhookRoutesV3 from './routes/webhooks-v3.js';
+import webhookRoutesV4 from './routes/webhooks-v4.js';
 import apiRoutes from './routes/api.js';
 import { injectOnetime } from './services/recharge-api.js';
 import { LTV_LADDER, MAX_CYCLE } from './services/ltv-config.js';
@@ -72,6 +74,8 @@ app.use('/webhooks', (req, res, next) => {
 
 // ── Recharge webhook routes (HMAC-validated, unauthenticated) ──────────────
 app.use('/webhooks', webhookRoutes);
+app.use('/webhooks/v3', webhookRoutesV3);
+app.use('/webhooks/v4', webhookRoutesV4);
 
 // ── JSON body parser for all other routes ─────────────────────────────────
 app.use(express.json());

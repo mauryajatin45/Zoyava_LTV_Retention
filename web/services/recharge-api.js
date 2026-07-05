@@ -103,3 +103,43 @@ export async function injectOnetime(addressId, variantId, nextChargeDate) {
   });
   throw lastError;
 }
+
+/**
+ * Fetches active subscriptions for a given address ID from Recharge.
+ */
+export async function getActiveSubscriptionsByAddress(addressId) {
+  try {
+    const response = await recharge.get(`/subscriptions`, {
+      params: { address_id: addressId, status: 'ACTIVE' },
+    });
+    return response.data?.subscriptions || [];
+  } catch (err) {
+    logger.error(TAG, `Failed to get active subscriptions for address ${addressId}`, {
+      error: err.response?.data || err.message,
+    });
+    throw err;
+  }
+}
+
+/**
+ * Updates the next charge scheduled date for a specific subscription in Recharge.
+ *
+ * @param {number} subscriptionId - Recharge subscription ID
+ * @param {string} nextChargeDate - ISO date string (YYYY-MM-DD)
+ */
+export async function updateSubscriptionNextChargeDate(subscriptionId, nextChargeDate) {
+  const payload = {
+    next_charge_scheduled_at: nextChargeDate,
+  };
+  try {
+    logger.info(TAG, `Updating subscription ${subscriptionId} next charge date to ${nextChargeDate}`);
+    const response = await recharge.put(`/subscriptions/${subscriptionId}`, payload);
+    logger.info(TAG, `✓ Subscription ${subscriptionId} updated successfully to ${nextChargeDate}`);
+    return response.data;
+  } catch (err) {
+    logger.error(TAG, `Failed to update subscription ${subscriptionId} next charge date`, {
+      error: err.response?.data || err.message,
+    });
+    throw err;
+  }
+}
