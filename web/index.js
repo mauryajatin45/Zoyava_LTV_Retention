@@ -25,6 +25,9 @@ import webhookRoutesV4 from './routes/webhooks-v4.js';
 import apiRoutes from './routes/api.js';
 import { injectOnetime } from './services/recharge-api.js';
 import { LTV_LADDER, MAX_CYCLE } from './services/ltv-config.js';
+import { initDailyKlaviyoCron } from './cron/daily-upcoming-charges.js';
+
+initDailyKlaviyoCron();
 
 const PORT = parseInt(process.env.BACKEND_PORT || process.env.PORT || '3000', 10);
 

@@ -143,3 +143,26 @@ export async function updateSubscriptionNextChargeDate(subscriptionId, nextCharg
     throw err;
   }
 }
+
+/**
+ * Fetches queued charges for a specific date (YYYY-MM-DD).
+ */
+export async function getUpcomingChargesByDate(dateString) {
+  try {
+    // We want exactly the charges scheduled on that date
+    // Note: ReCharge API filters: scheduled_at or date_min/date_max depending on version.
+    // In 2021-11 version, `scheduled_at` takes a date string or range.
+    const response = await recharge.get('/charges', {
+      params: { 
+        status: 'QUEUED', 
+        scheduled_at: dateString 
+      },
+    });
+    return response.data?.charges || [];
+  } catch (err) {
+    logger.error(TAG, `Failed to get upcoming charges for date ${dateString}`, {
+      error: err.response?.data || err.message,
+    });
+    throw err;
+  }
+}

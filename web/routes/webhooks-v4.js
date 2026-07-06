@@ -4,6 +4,7 @@ import { injectOnetime, getActiveSubscriptionsByAddress, updateSubscriptionNextC
 import { TARGET_PRODUCT_ID_V4, V4_VARIANT_TO_KIDS, LTV_LADDER_V4, MAX_CYCLE_V4 } from '../services/ltv-config-v4.js';
 import { claimCharge } from '../services/idempotency-store.js';
 import { logger } from '../services/logger.js';
+import { trackKlaviyoEvent } from '../services/klaviyo-api.js';
 
 const TAG = '[LTV Webhook V4]';
 const router = express.Router();
@@ -25,6 +26,9 @@ export async function executeV4Automation(charge) {
     orders_count:  cycleNumber,
     scheduled_at:  chargeDate,
     status,
+    email,
+    first_name,
+    last_name
   } = charge;
 
   logger.info(TAG, 'V4 Charge details', { chargeId, addressId, status, cycleNumber, chargeDate });
@@ -65,6 +69,10 @@ export async function executeV4Automation(charge) {
   // 1. The 28-Day First Rebill Interval Automation for Order #1
   let plus28DaysStr = null;
   if (cycleNumber === 1) {
+    // 1. Trigger Klaviyo Welcome Email for digital PDFs
+    await trackKlaviyoEvent(email, 'starter_kit_purchased', { offer: 'v4', kidCount }, { first_name: first_name, last_name: last_name });
+
+    // 2. Adjust Rebill date
     try {
       const baseDate = chargeDate ? new Date(chargeDate) : new Date();
       baseDate.setDate(baseDate.getDate() + 28);
