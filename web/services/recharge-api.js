@@ -47,9 +47,9 @@ recharge.interceptors.response.use(
 export async function injectOnetime(addressId, variantId, nextChargeDate, quantity = 1) {
   const payload = {
     address_id: addressId,
-    shopify_variant_id: variantId,
+    external_variant_id: { ecommerce: String(variantId) },
     quantity: quantity,
-    price: 0.00,
+    price: "0.00",
     next_charge_scheduled_at: nextChargeDate,
   };
 
@@ -63,7 +63,7 @@ export async function injectOnetime(addressId, variantId, nextChargeDate, quanti
         nextChargeDate,
       });
 
-      const response = await recharge.post(`/addresses/${addressId}/onetimes`, payload);
+      const response = await recharge.post(`/onetimes`, payload);
 
       logger.info(TAG, `✓ Onetime created`, {
         variantId,
