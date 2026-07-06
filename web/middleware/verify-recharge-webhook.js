@@ -38,31 +38,59 @@ export function verifyRechargeWebhook(req, res, next) {
     return res.status(500).json({ error: 'Server misconfiguration: missing webhook secret' });
   }
 
-  const expectedHmac = crypto
-    .createHmac('sha256', secret)
-    .update(rawBody)
-    .digest('base64');
+  // Recharge may send HMAC as hex OR base64 depending on API version.
+  // Detect format: if it only contains [0-9a-f] and is 64 chars, it's hex.
+  const isHex = /^[0-9a-f]{64}$/i.test(signature);
+  const sigEncoding = isHex ? 'hex' : 'base64';
+
+  logger.debug(TAG, `Signature format detected: ${sigEncoding}`, { signatureLength: signature.length });
+
+  // Try verification with the primary secret (RECHARGE_WEBHOOK_SECRET)
+  // and fallback to RECHARGE_API_TOKEN if it fails.
+  const secretsToTry = [secret];
+  if (process.env.RECHARGE_API_TOKEN && process.env.RECHARGE_API_TOKEN !== secret) {
+    secretsToTry.push(process.env.RECHARGE_API_TOKEN);
+  }
 
   let valid = false;
-  try {
-    const sigBuffer      = Buffer.from(signature,    'base64');
-    const expectedBuffer = Buffer.from(expectedHmac, 'base64');
-    valid =
-      sigBuffer.length === expectedBuffer.length &&
-      crypto.timingSafeEqual(sigBuffer, expectedBuffer);
-  } catch {
-    valid = false;
+  let matchedSecret = null;
+
+  for (const trySecret of secretsToTry) {
+    const expectedHmac = crypto
+      .createHmac('sha256', trySecret)
+      .update(rawBody)
+      .digest(sigEncoding);
+
+    try {
+      const sigBuffer      = Buffer.from(signature,    sigEncoding);
+      const expectedBuffer = Buffer.from(expectedHmac, sigEncoding);
+      if (
+        sigBuffer.length === expectedBuffer.length &&
+        crypto.timingSafeEqual(sigBuffer, expectedBuffer)
+      ) {
+        valid = true;
+        matchedSecret = trySecret === secret ? 'RECHARGE_WEBHOOK_SECRET' : 'RECHARGE_API_TOKEN';
+        break;
+      }
+    } catch {
+      // continue to next secret
+    }
   }
 
   if (!valid) {
+    // Log what we received vs expected for debugging
+    const expectedHex = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+    const expectedB64 = crypto.createHmac('sha256', secret).update(rawBody).digest('base64');
     logger.error(TAG, 'Rejected — HMAC signature does not match', {
       received: signature,
-      expected: expectedHmac,
+      receivedFormat: sigEncoding,
+      expectedHex,
+      expectedBase64: expectedB64,
     });
     return res.status(401).json({ error: 'Invalid HMAC signature' });
   }
 
-  logger.info(TAG, '✓ HMAC verified');
+  logger.info(TAG, `✓ HMAC verified (matched via ${matchedSecret})`);
 
   // ── 3. Parse the body ─────────────────────────────────────────────────────
   try {

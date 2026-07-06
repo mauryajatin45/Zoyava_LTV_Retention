@@ -78,7 +78,8 @@ export async function injectOnetime(addressId, variantId, nextChargeDate, quanti
       const status = err.response?.status;
 
       // Do NOT retry on 4xx client errors (bad variant ID, wrong address, etc.)
-      if (status && status >= 400 && status < 500) {
+      // EXCEPT 409 (conflict) which Recharge uses for concurrent call rate limiting
+      if (status && status >= 400 && status < 500 && status !== 409) {
         logger.error(TAG, `Non-retryable error (${status}) injecting variant ${variantId}`, {
           error: err.response?.data,
         });
