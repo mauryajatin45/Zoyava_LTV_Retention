@@ -145,6 +145,21 @@ export async function updateSubscriptionNextChargeDate(subscriptionId, nextCharg
 }
 
 /**
+ * Fetches an address by ID to get the customer's first and last name.
+ */
+export async function getAddressById(addressId) {
+  try {
+    const response = await recharge.get(`/addresses/${addressId}`);
+    return response.data?.address;
+  } catch (err) {
+    logger.error(TAG, `Failed to get address ${addressId}`, {
+      error: err.response?.data || err.message,
+    });
+    throw err;
+  }
+}
+
+/**
  * Fetches queued charges for a specific date (YYYY-MM-DD).
  */
 export async function getUpcomingChargesByDate(dateString) {

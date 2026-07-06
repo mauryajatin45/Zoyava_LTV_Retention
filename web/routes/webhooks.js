@@ -4,8 +4,8 @@ import { injectOnetime } from '../services/recharge-api.js';
 import { LTV_LADDER, MAX_CYCLE } from '../services/ltv-config.js';
 import { claimCharge } from '../services/idempotency-store.js';
 import { logger } from '../services/logger.js';
-import { executeV3Automation } from './webhooks-v3.js';
-import { executeV4Automation } from './webhooks-v4.js';
+import { executeV3Automation, executeV3NewSubscription } from './webhooks-v3.js';
+import { executeV4Automation, executeV4NewSubscription } from './webhooks-v4.js';
 
 const TAG = '[LTV Webhook]';
 const router = express.Router();
@@ -169,6 +169,42 @@ router.post('/recharge/charge-paid', verifyRechargeWebhook, async (req, res) => 
   });
 
   logger.info(TAG, `━━ Charge ${chargeId} complete: ${successCount} injected, ${failCount} failed ━━`);
+});
+
+/**
+ * POST /webhooks/recharge/subscription-created
+ *
+ * Triggered by Recharge when a new subscription is created (e.g. from Shopify Checkout Integration).
+ * This replaces charge/paid for Order #1.
+ */
+router.post('/recharge/subscription-created', verifyRechargeWebhook, async (req, res) => {
+  res.status(200).json({ received: true });
+  logger.section(TAG, '🆕 subscription/created webhook received');
+
+  const subscription = req.body?.subscription;
+  if (!subscription) {
+    logger.error(TAG, 'Payload missing "subscription" object');
+    return;
+  }
+
+  const { shopify_product_id, external_product_id } = subscription;
+  
+  const TARGET_PRODUCT_ID_V3  = process.env.TARGET_PRODUCT_ID_V3  || '9656256463089';
+  const TARGET_PRODUCT_ID_V4  = process.env.TARGET_PRODUCT_ID_V4  || '9656359256305';
+
+  const isV3 = String(shopify_product_id) === TARGET_PRODUCT_ID_V3 || String(external_product_id) === TARGET_PRODUCT_ID_V3;
+  if (isV3) {
+    logger.info(TAG, `✓ Zoyava Offer V3 Product (${TARGET_PRODUCT_ID_V3}) detected for new subscription`);
+    return await executeV3NewSubscription(subscription);
+  }
+
+  const isV4 = String(shopify_product_id) === TARGET_PRODUCT_ID_V4 || String(external_product_id) === TARGET_PRODUCT_ID_V4;
+  if (isV4) {
+    logger.info(TAG, `✓ Zoyava Offer V4 Product (${TARGET_PRODUCT_ID_V4}) detected for new subscription`);
+    return await executeV4NewSubscription(subscription);
+  }
+
+  logger.info(TAG, `Skipping new subscription — Product ID ${shopify_product_id} is neither V3 nor V4 target`);
 });
 
 export default router;

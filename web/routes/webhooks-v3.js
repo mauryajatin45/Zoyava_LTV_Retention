@@ -1,104 +1,66 @@
-import express from 'express';
-import { verifyRechargeWebhook } from '../middleware/verify-recharge-webhook.js';
-import { injectOnetime, getActiveSubscriptionsByAddress, updateSubscriptionNextChargeDate } from '../services/recharge-api.js';
-import { TARGET_PRODUCT_ID_V3, LTV_LADDER_V3, MAX_CYCLE_V3 } from '../services/ltv-config-v3.js';
+import { injectOnetime, getAddressById, updateSubscriptionNextChargeDate } from '../services/recharge-api.js';
+import { LTV_LADDER_V3, MAX_CYCLE_V3 } from '../services/ltv-config-v3.js';
 import { claimCharge } from '../services/idempotency-store.js';
 import { logger } from '../services/logger.js';
 import { trackKlaviyoEvent } from '../services/klaviyo-api.js';
 
 const TAG = '[LTV Webhook V3]';
-const router = express.Router();
 
 /**
- * Core automation logic for Offer V3. Can be called from the dedicated route or the main router.
+ * Handles the initial entry into the V3 Funnel via the 'subscription/created' webhook.
+ * - Fires Klaviyo Welcome Email
+ * - Adjusts Rebill 1 date to 50 days from now
+ * - Injects Rebill 1 gifts ($0 onetimes) onto the address
  */
-export async function executeV3Automation(charge) {
-  if (!charge) {
-    logger.error(TAG, 'Payload missing "charge" object — nothing to process');
-    return;
-  }
+export async function executeV3NewSubscription(subscription) {
+  logger.section(TAG, `🚀 New V3 Subscription Created: ${subscription.id}`);
 
   const {
-    id:            chargeId,
-    address_id:    addressId,
-    orders_count:  cycleNumber,
-    scheduled_at:  chargeDate,
-    status,
-    email,
-    first_name,
-    last_name
-  } = charge;
+    id: subscriptionId,
+    address_id: addressId,
+    email
+  } = subscription;
 
-  logger.info(TAG, 'V3 Charge details', { chargeId, addressId, status, cycleNumber, chargeDate });
+  let firstName = '';
+  let lastName = '';
 
-  if (status !== 'SUCCESS' && status !== 'success') {
-    logger.info(TAG, `Skipping — status is "${status}", not SUCCESS`);
-    return;
-  }
-
-  let claimed = false;
   try {
-    claimed = await claimCharge(chargeId);
-  } catch (dbErr) {
-    logger.error(TAG, 'DB error during idempotency claim — aborting to prevent duplicates', { chargeId, error: dbErr.message });
-    return;
+    const address = await getAddressById(addressId);
+    firstName = address?.first_name || '';
+    lastName = address?.last_name || '';
+  } catch (err) {
+    logger.warn(TAG, `Could not fetch address ${addressId} for name — proceeding without names for Klaviyo`);
   }
 
-  if (!claimed) {
-    logger.warn(TAG, `Charge ${chargeId} already processed — skipping (idempotency guard)`);
-    return;
-  }
-  logger.info(TAG, `✓ Charge ${chargeId} claimed — proceeding with V3 automation`);
+  // 1. Trigger Klaviyo Welcome Email for digital PDFs
+  logger.info(TAG, `Triggering Klaviyo welcome flow for ${email}`);
+  await trackKlaviyoEvent(email, 'starter_kit_purchased', { offer: 'v3' }, { first_name: firstName, last_name: lastName });
 
-  // Special V3 Automation: 50-Day First Rebill Interval for Order #1
+  // 2. Adjust Rebill date to +50 days
   let plus50DaysStr = null;
-  if (cycleNumber === 1) {
-    // 1. Trigger Klaviyo Welcome Email for digital PDFs
-    await trackKlaviyoEvent(email, 'starter_kit_purchased', { offer: 'v3' }, { first_name: first_name, last_name: last_name });
+  try {
+    const baseDate = new Date();
+    baseDate.setDate(baseDate.getDate() + 50);
+    plus50DaysStr = baseDate.toISOString().split('T')[0];
 
-    // 2. Adjust Rebill date
-    try {
-      const baseDate = chargeDate ? new Date(chargeDate) : new Date();
-      baseDate.setDate(baseDate.getDate() + 50);
-      plus50DaysStr = baseDate.toISOString().split('T')[0];
-
-      logger.info(TAG, `🕒 Order #1 detected! Delaying Rebill 1 to 50 days (${plus50DaysStr})...`);
-      const activeSubs = await getActiveSubscriptionsByAddress(addressId);
-      
-      for (const sub of activeSubs) {
-        if (
-          String(sub.external_product_id) === TARGET_PRODUCT_ID_V3 ||
-          String(sub.shopify_product_id)  === TARGET_PRODUCT_ID_V3 ||
-          activeSubs.length === 1
-        ) {
-          await updateSubscriptionNextChargeDate(sub.id, plus50DaysStr);
-        }
-      }
-    } catch (err) {
-      logger.error(TAG, 'Error during 50-day first rebill scheduling automation', { error: err.message });
-    }
+    logger.info(TAG, `🕒 Delaying Rebill 1 to 50 days (${plus50DaysStr}) for sub ${subscriptionId}`);
+    await updateSubscriptionNextChargeDate(subscriptionId, plus50DaysStr);
+  } catch (err) {
+    logger.error(TAG, 'Error during 50-day first rebill scheduling', { error: err.message });
   }
 
-  const targetCycle = cycleNumber + 1;
-  if (targetCycle > MAX_CYCLE_V3) {
-    logger.info(TAG, `Cycle ${targetCycle} is beyond MAX_CYCLE_V3 (${MAX_CYCLE_V3}) — customer has completed ladder`);
-    return;
-  }
-
+  // 3. Inject Cycle 2 gifts (Water Bottle + Stickers)
+  const targetCycle = 2;
   const variantIds = LTV_LADDER_V3[targetCycle];
+  
   if (!variantIds || variantIds.length === 0) {
     logger.warn(TAG, `No variants mapped in LTV_LADDER_V3 for cycle ${targetCycle}`);
     return;
   }
 
-  const nextChargeDate = plus50DaysStr || (chargeDate ? chargeDate.split('T')[0] : new Date().toISOString().split('T')[0]);
+  const nextChargeDate = plus50DaysStr || new Date().toISOString().split('T')[0];
 
-  logger.info(TAG, `🎁 Injecting V3 Cycle ${targetCycle} gifts (order #${cycleNumber} just paid)`, {
-    targetCycle,
-    variantIds,
-    addressId,
-    nextChargeDate,
-  });
+  logger.info(TAG, `🎁 Injecting V3 Cycle 2 gifts onto address ${addressId}`, { variantIds, nextChargeDate });
 
   const results = await Promise.allSettled(
     variantIds.map((variantId) => injectOnetime(addressId, variantId, nextChargeDate))
@@ -116,13 +78,89 @@ export async function executeV3Automation(charge) {
     }
   });
 
-  logger.info(TAG, `━━ V3 Charge ${chargeId} complete: ${successCount} injected, ${failCount} failed ━━`);
+  logger.info(TAG, `━━ V3 New Sub ${subscriptionId} complete: ${successCount} injected, ${failCount} failed ━━`);
 }
 
-router.post('/recharge/charge-paid', verifyRechargeWebhook, async (req, res) => {
-  res.status(200).json({ received: true });
-  logger.section(TAG, '📦 V3 charge/paid webhook received directly');
-  await executeV3Automation(req.body?.charge);
-});
+/**
+ * Core automation logic for Offer V3 recurring charges via 'charge/paid' webhook.
+ * Handles Cycle 3 through 6.
+ */
+export async function executeV3Automation(charge) {
+  if (!charge) {
+    logger.error(TAG, 'Payload missing "charge" object');
+    return;
+  }
 
-export default router;
+  const {
+    id:            chargeId,
+    address_id:    addressId,
+    orders_count:  cycleNumber,
+    scheduled_at:  chargeDate,
+    status
+  } = charge;
+
+  logger.info(TAG, 'V3 Recurring Charge details', { chargeId, addressId, status, cycleNumber });
+
+  if (status !== 'SUCCESS' && status !== 'success') {
+    logger.info(TAG, `Skipping — status is "${status}", not SUCCESS`);
+    return;
+  }
+
+  // Since SCI handles checkout, the first recurring charge is Order 2 (Cycle 2)
+  if (cycleNumber === 1) {
+    logger.info(TAG, `Skipping charge/paid for Order #1 - initial checkout logic is now handled by subscription/created webhook`);
+    return;
+  }
+
+  let claimed = false;
+  try {
+    claimed = await claimCharge(chargeId);
+  } catch (dbErr) {
+    logger.error(TAG, 'DB error during idempotency claim', { error: dbErr.message });
+    return;
+  }
+
+  if (!claimed) {
+    logger.warn(TAG, `Charge ${chargeId} already processed (idempotency guard)`);
+    return;
+  }
+
+  // Determine next cycle's gift
+  const targetCycle = cycleNumber + 1;
+  if (targetCycle > MAX_CYCLE_V3) {
+    logger.info(TAG, `Cycle ${targetCycle} is beyond MAX_CYCLE_V3 (${MAX_CYCLE_V3})`);
+    return;
+  }
+
+  const variantIds = LTV_LADDER_V3[targetCycle];
+  if (!variantIds || variantIds.length === 0) {
+    logger.warn(TAG, `No variants mapped in LTV_LADDER_V3 for cycle ${targetCycle}`);
+    return;
+  }
+
+  const nextChargeDate = chargeDate ? chargeDate.split('T')[0] : new Date().toISOString().split('T')[0];
+
+  logger.info(TAG, `🎁 Injecting V3 Cycle ${targetCycle} gifts (order #${cycleNumber} just paid)`, {
+    targetCycle,
+    variantIds,
+    addressId,
+    nextChargeDate,
+  });
+
+  const results = await Promise.allSettled(
+    variantIds.map((variantId) => injectOnetime(addressId, variantId, nextChargeDate))
+  );
+
+  let successCount = 0;
+  let failCount    = 0;
+  results.forEach((result, i) => {
+    if (result.status === 'fulfilled') {
+      successCount++;
+    } else {
+      failCount++;
+      logger.error(TAG, `Failed to inject gift`, { variantId: variantIds[i], error: result.reason?.response?.data || result.reason?.message });
+    }
+  });
+
+  logger.info(TAG, `━━ V3 Recurring Charge ${chargeId} complete: ${successCount} injected, ${failCount} failed ━━`);
+}
