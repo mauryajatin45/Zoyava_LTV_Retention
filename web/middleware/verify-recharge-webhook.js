@@ -54,43 +54,63 @@ export function verifyRechargeWebhook(req, res, next) {
 
   let valid = false;
   let matchedSecret = null;
+  let matchedMethod = null;
 
   for (const trySecret of secretsToTry) {
-    const expectedHmac = crypto
+    // Method 1: Standard HMAC-SHA256 (What they should do)
+    const hmacExpected = crypto
       .createHmac('sha256', trySecret)
       .update(rawBody)
       .digest(sigEncoding);
 
-    try {
-      const sigBuffer      = Buffer.from(signature,    sigEncoding);
-      const expectedBuffer = Buffer.from(expectedHmac, sigEncoding);
-      if (
-        sigBuffer.length === expectedBuffer.length &&
-        crypto.timingSafeEqual(sigBuffer, expectedBuffer)
-      ) {
-        valid = true;
-        matchedSecret = trySecret === secret ? 'RECHARGE_WEBHOOK_SECRET' : 'RECHARGE_API_TOKEN';
-        break;
+    // Method 2: Recharge Legacy Quirky SHA256(secret + body) (What their docs say they do for the legacy header)
+    // "concatenating the API Client Secret with the JSON-stringified request body and hashing the result with SHA-256"
+    const legacyString = trySecret + rawBody.toString('utf8');
+    const legacyExpected = crypto
+      .createHash('sha256')
+      .update(legacyString, 'utf8')
+      .digest(sigEncoding);
+
+    const candidates = [
+      { value: hmacExpected, method: 'Standard HMAC' },
+      { value: legacyExpected, method: 'Legacy SHA256(secret+body)' }
+    ];
+
+    for (const candidate of candidates) {
+      try {
+        const sigBuffer      = Buffer.from(signature,    sigEncoding);
+        const expectedBuffer = Buffer.from(candidate.value, sigEncoding);
+        if (
+          sigBuffer.length === expectedBuffer.length &&
+          crypto.timingSafeEqual(sigBuffer, expectedBuffer)
+        ) {
+          valid = true;
+          matchedSecret = trySecret === secret ? 'RECHARGE_WEBHOOK_SECRET' : 'RECHARGE_API_TOKEN';
+          matchedMethod = candidate.method;
+          break;
+        }
+      } catch {
+        // continue
       }
-    } catch {
-      // continue to next secret
     }
+    
+    if (valid) break;
   }
 
   if (!valid) {
     // Log what we received vs expected for debugging
-    const expectedHex = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
-    const expectedB64 = crypto.createHmac('sha256', secret).update(rawBody).digest('base64');
+    const hmacHex = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+    const legacyHex = crypto.createHash('sha256').update(secret + rawBody.toString('utf8'), 'utf8').digest('hex');
     logger.error(TAG, 'Rejected — HMAC signature does not match', {
       received: signature,
       receivedFormat: sigEncoding,
-      expectedHex,
-      expectedBase64: expectedB64,
+      expectedStandardHmacHex: hmacHex,
+      expectedLegacyHashHex: legacyHex,
     });
     return res.status(401).json({ error: 'Invalid HMAC signature' });
   }
 
-  logger.info(TAG, `✓ HMAC verified (matched via ${matchedSecret})`);
+  logger.info(TAG, `✓ HMAC verified (matched via ${matchedSecret}, method: ${matchedMethod})`);
 
   // ── 3. Parse the body ─────────────────────────────────────────────────────
   try {
