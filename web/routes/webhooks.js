@@ -6,6 +6,7 @@ import { claimCharge } from '../services/idempotency-store.js';
 import { logger } from '../services/logger.js';
 import { executeV3Automation, executeV3NewSubscription } from './webhooks-v3.js';
 import { executeV4Automation, executeV4NewSubscription } from './webhooks-v4.js';
+import { logWebhook } from '../services/webhook-logger.js';
 
 const TAG = '[LTV Webhook]';
 const router = express.Router();
@@ -166,6 +167,19 @@ router.post('/recharge/charge-paid', verifyRechargeWebhook, async (req, res) => 
   }
 
   logger.info(TAG, `━━ Charge ${chargeId} complete: ${successCount} injected, ${failCount} failed ━━`);
+
+  await logWebhook({
+    webhook_type: 'charge/paid',
+    charge_id: chargeId,
+    address_id: addressId,
+    funnel_type: 'Legacy',
+    cycle_number: targetCycle, // The cycle gifts were injected for
+    status: failCount > 0 ? 'FAILED' : 'SUCCESS',
+    gifts_injected: variantIds,
+    next_charge_date: nextChargeDate,
+    request_payload: req.body,
+    error_message: failCount > 0 ? `Failed to inject ${failCount} gift(s)` : null
+  });
 });
 
 /**

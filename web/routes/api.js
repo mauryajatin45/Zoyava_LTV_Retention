@@ -3,6 +3,7 @@ import shopify from '../shopify.js';
 import { LTV_LADDER } from '../services/ltv-config.js';
 import { LTV_LADDER_V3 } from '../services/ltv-config-v3.js';
 import { LTV_LADDER_V4 } from '../services/ltv-config-v4.js';
+import { getWebhookLogs } from '../services/webhook-logger.js';
 
 const router = express.Router();
 
@@ -82,6 +83,24 @@ router.get('/ltv-config', async (req, res) => {
       ladderV4: LTV_LADDER_V4,
       variantDetails: {}
     });
+  }
+});
+
+// GET /api/logs  →  Returns webhook execution logs for the frontend dashboard
+router.get('/logs', async (req, res) => {
+  const session = res.locals?.shopify?.session;
+  if (!session) {
+    return res.status(401).json({ error: 'No active session found.' });
+  }
+
+  try {
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const offset = parseInt(req.query.offset, 10) || 0;
+    const logs = await getWebhookLogs(limit, offset);
+    res.status(200).json({ logs });
+  } catch (error) {
+    console.error('[API] Error fetching webhook logs:', error);
+    res.status(500).json({ error: 'Failed to fetch logs' });
   }
 });
 

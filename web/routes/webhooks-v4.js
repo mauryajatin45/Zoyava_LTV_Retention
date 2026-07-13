@@ -3,6 +3,7 @@ import { TARGET_PRODUCT_ID_V4, V4_VARIANT_TO_KIDS, LTV_LADDER_V4, MAX_CYCLE_V4 }
 import { claimCharge, claimKey } from '../services/idempotency-store.js';
 import { logger } from '../services/logger.js';
 import { trackKlaviyoEvent } from '../services/klaviyo-api.js';
+import { logWebhook } from '../services/webhook-logger.js';
 
 const TAG = '[LTV Webhook V4]';
 
@@ -103,6 +104,19 @@ export async function executeV4NewSubscription(subscription) {
   const { successCount, failCount } = await injectGiftsSequentially(addressId, variantIds, nextChargeDate, kidCount);
 
   logger.info(TAG, `━━ V4 New Sub ${subscriptionId} complete: ${successCount} injected, ${failCount} failed ━━`);
+
+  await logWebhook({
+    webhook_type: 'subscription/created',
+    charge_id: subscriptionId,
+    address_id: addressId,
+    funnel_type: 'V4',
+    cycle_number: 2,
+    status: failCount > 0 ? 'FAILED' : 'SUCCESS',
+    gifts_injected: variantIds,
+    next_charge_date: nextChargeDate,
+    request_payload: subscription,
+    error_message: failCount > 0 ? `Failed to inject ${failCount} gift(s)` : null
+  });
 }
 
 /**
@@ -215,6 +229,19 @@ export async function executeV4Automation(charge) {
       logger.info(TAG, `🎁 Injecting V4 Cycle 2 gifts (${kidCount}x, won race from charge/paid)`, { firstCycleVariants, firstCycleDate });
       const { successCount, failCount } = await injectGiftsSequentially(addressId, firstCycleVariants, firstCycleDate, kidCount);
       logger.info(TAG, `━━ V4 Order #1 Charge ${chargeId} complete: ${successCount} injected (${kidCount}x each), ${failCount} failed ━━`);
+
+      await logWebhook({
+        webhook_type: 'charge/paid',
+        charge_id: chargeId,
+        address_id: addressId,
+        funnel_type: 'V4',
+        cycle_number: 2,
+        status: failCount > 0 ? 'FAILED' : 'SUCCESS',
+        gifts_injected: firstCycleVariants,
+        next_charge_date: firstCycleDate,
+        request_payload: charge,
+        error_message: failCount > 0 ? `Failed to inject ${failCount} gift(s)` : null
+      });
     }
     return; // Order #1 fully handled — exit here
   }
@@ -246,4 +273,17 @@ export async function executeV4Automation(charge) {
   const { successCount, failCount } = await injectGiftsSequentially(addressId, variantIds, nextChargeDate, kidCount);
 
   logger.info(TAG, `━━ V4 Charge ${chargeId} complete: ${successCount} injected (${kidCount}x each), ${failCount} failed ━━`);
+
+  await logWebhook({
+    webhook_type: 'charge/paid',
+    charge_id: chargeId,
+    address_id: addressId,
+    funnel_type: 'V4',
+    cycle_number: targetCycle,
+    status: failCount > 0 ? 'FAILED' : 'SUCCESS',
+    gifts_injected: variantIds,
+    next_charge_date: nextChargeDate,
+    request_payload: charge,
+    error_message: failCount > 0 ? `Failed to inject ${failCount} gift(s)` : null
+  });
 }

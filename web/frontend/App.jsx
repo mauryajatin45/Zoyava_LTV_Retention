@@ -14,15 +14,16 @@ export default function App() {
   const { t } = useTranslation();
 
   return (
-    <PolarisProvider>
-      <BrowserRouter>
+    <BrowserRouter>
+      <PolarisProvider>
         <QueryProvider>
           <NavMenu>
             <Link to="/" rel="home" />
+            <Link to="/Logs">Logs</Link>
           </NavMenu>
           <Routes pages={pages} />
         </QueryProvider>
-      </BrowserRouter>
-    </PolarisProvider>
+      </PolarisProvider>
+    </BrowserRouter>
   );
 }

@@ -5,7 +5,7 @@ dotenv.config();
 
 const TAG = '[IdempotencyStore]';
 
-const pool = mysql.createPool({
+export const pool = mysql.createPool({
   host:     process.env.DB_HOST,
   user:     process.env.DB_USER,
   password: process.env.DB_PASS,
@@ -32,7 +32,28 @@ const pool = mysql.createPool({
       )
     `);
 
-    logger.info(TAG, 'processed_charges table verified/created');
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS webhook_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        webhook_type VARCHAR(100),
+        charge_id VARCHAR(255),
+        address_id VARCHAR(255),
+        funnel_type VARCHAR(50),
+        cycle_number INT,
+        status ENUM('SUCCESS', 'FAILED', 'SKIPPED', 'PENDING'),
+        gifts_injected JSON,
+        next_charge_date DATE,
+        request_payload JSON,
+        response_payload JSON,
+        error_message TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_address_id (address_id),
+        INDEX idx_status (status),
+        INDEX idx_created_at (created_at)
+      )
+    `);
+
+    logger.info(TAG, 'processed_charges and webhook_logs tables verified/created');
     connection.release();
   } catch (err) {
     // CRITICAL: if the DB is unreachable at startup we log it loudly
