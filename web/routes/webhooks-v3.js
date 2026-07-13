@@ -1,6 +1,6 @@
 import { injectOnetime, getAddressById, getActiveSubscriptionsByAddress, updateSubscriptionNextChargeDate } from '../services/recharge-api.js';
 import { TARGET_PRODUCT_ID_V3, LTV_LADDER_V3, MAX_CYCLE_V3 } from '../services/ltv-config-v3.js';
-import { claimCharge } from '../services/idempotency-store.js';
+import { claimCharge, claimKey } from '../services/idempotency-store.js';
 import { logger } from '../services/logger.js';
 import { trackKlaviyoEvent } from '../services/klaviyo-api.js';
 
@@ -71,7 +71,22 @@ export async function executeV3NewSubscription(subscription) {
     logger.error(TAG, 'Error during 50-day first rebill scheduling', { error: err.message });
   }
 
-  // 3. Inject Cycle 2 gifts (Water Bottle + Stickers) — SEQUENTIALLY to avoid 409
+  // 3. Inject Cycle 2 gifts — guarded by a shared idempotency key so charge/paid
+  //    (which also fires for Order #1) cannot inject a second time.
+  const firstOrderKey = `first-order-addr-${addressId}`;
+  let claimed = false;
+  try {
+    claimed = await claimKey(firstOrderKey);
+  } catch (dbErr) {
+    logger.error(TAG, 'DB error during first-order idempotency claim', { error: dbErr.message });
+    return;
+  }
+
+  if (!claimed) {
+    logger.warn(TAG, `First-order gifts for address ${addressId} already injected by charge/paid — skipping duplicate from subscription/created`);
+    return;
+  }
+
   const targetCycle = 2;
   const variantIds = LTV_LADDER_V3[targetCycle];
   
@@ -131,8 +146,9 @@ export async function executeV3Automation(charge) {
   }
 
   // ── Order #1: Initial Starter Kit purchase ──────────────────────────────
-  // Recharge SCI DOES fire charge/paid for the first order.
-  // We handle the 50-day date shift, Klaviyo welcome email, and Cycle 2 gift injection here.
+  // Recharge SCI fires BOTH subscription/created AND charge/paid for Order #1.
+  // We use a shared idempotency key so whichever fires first injects the Cycle 2
+  // gifts, and the second one is silently skipped — preventing double injection.
   let plus50DaysStr = null;
   if (cycleNumber === 1) {
     logger.info(TAG, `🎉 Order #1 detected — running first-purchase automation`);
@@ -161,6 +177,32 @@ export async function executeV3Automation(charge) {
     } catch (err) {
       logger.error(TAG, 'Error during 50-day first rebill scheduling', { error: err.message });
     }
+
+    // 3. Race for the shared first-order idempotency key.
+    //    subscription/created may have already claimed it — if so, skip gift injection.
+    const firstOrderKey = `first-order-addr-${addressId}`;
+    let firstOrderClaimed = false;
+    try {
+      firstOrderClaimed = await claimKey(firstOrderKey);
+    } catch (dbErr) {
+      logger.error(TAG, 'DB error during first-order idempotency claim', { error: dbErr.message });
+      return;
+    }
+
+    if (!firstOrderClaimed) {
+      logger.warn(TAG, `First-order gifts for address ${addressId} already injected by subscription/created — skipping Cycle 2 from charge/paid`);
+      return;
+    }
+
+    // Won the race — inject Cycle 2 gifts here
+    const firstCycleVariants = LTV_LADDER_V3[2];
+    if (firstCycleVariants && firstCycleVariants.length > 0) {
+      const firstCycleDate = plus50DaysStr || (chargeDate ? chargeDate.split('T')[0] : new Date().toISOString().split('T')[0]);
+      logger.info(TAG, `🎁 Injecting V3 Cycle 2 gifts (won race from charge/paid)`, { firstCycleVariants, firstCycleDate });
+      const { successCount, failCount } = await injectGiftsSequentially(addressId, firstCycleVariants, firstCycleDate);
+      logger.info(TAG, `━━ V3 Order #1 Charge ${chargeId} complete: ${successCount} injected, ${failCount} failed ━━`);
+    }
+    return; // Order #1 fully handled — exit here
   }
 
   // ── Gift injection for next cycle ───────────────────────────────────────

@@ -143,30 +143,27 @@ router.post('/recharge/charge-paid', verifyRechargeWebhook, async (req, res) => 
 
   logger.info(TAG, `Next charge date: ${nextChargeDate}`);
 
-  // ── 8. Inject all gifts (each has retry logic inside injectOnetime) ───────
-  const results = await Promise.allSettled(
-    variantIds.map((variantId) => injectOnetime(addressId, variantId, nextChargeDate))
-  );
-
-  // ── 9. Summary ────────────────────────────────────────────────────────────
+  // ── 8. Inject gifts SEQUENTIALLY to avoid Recharge 409 Conflict ──────────
+  //  (Recharge returns 409 if two /onetimes calls hit the same address simultaneously)
   let successCount = 0;
   let failCount    = 0;
 
-  results.forEach((result, i) => {
-    if (result.status === 'fulfilled') {
+  for (const variantId of variantIds) {
+    try {
+      const result = await injectOnetime(addressId, variantId, nextChargeDate);
       successCount++;
       logger.info(TAG, `✓ Gift injected`, {
-        variantId:  variantIds[i],
-        onetimeId:  result.value.onetime?.id,
+        variantId,
+        onetimeId: result.onetime?.id,
       });
-    } else {
+    } catch (err) {
       failCount++;
       logger.error(TAG, `Failed to inject gift`, {
-        variantId: variantIds[i],
-        error:     result.reason?.response?.data || result.reason?.message,
+        variantId,
+        error: err.response?.data || err.message,
       });
     }
-  });
+  }
 
   logger.info(TAG, `━━ Charge ${chargeId} complete: ${successCount} injected, ${failCount} failed ━━`);
 });

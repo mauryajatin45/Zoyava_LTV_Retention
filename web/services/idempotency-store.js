@@ -64,6 +64,22 @@ export async function claimCharge(chargeId) {
 }
 
 /**
+ * Generic atomic idempotency claim that accepts any string key.
+ * Used to prevent double-processing across different webhook types
+ * (e.g. subscription/created AND charge/paid both firing for Order #1).
+ *
+ * @param {string} key - Any unique string key (e.g. 'first-order-addr-12345')
+ * @returns {Promise<boolean>} true = first time seen (process it), false = duplicate (skip)
+ */
+export async function claimKey(key) {
+  const [result] = await pool.query(
+    'INSERT IGNORE INTO processed_charges (charge_id) VALUES (?)',
+    [String(key)]
+  );
+  return result.affectedRows === 1;
+}
+
+/**
  * @deprecated Use claimCharge() instead — it's atomic.
  * Kept for backward compatibility with any direct callers.
  */
