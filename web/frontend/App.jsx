@@ -6,24 +6,27 @@ import Routes from "./Routes";
 import { QueryProvider, PolarisProvider } from "./components";
 
 export default function App() {
-  // Any .tsx or .jsx files in /pages will become a route
-  // See documentation for <Routes /> for more info
+  console.log("[LTV Frontend] <App /> function executing...");
+  
   const pages = import.meta.glob("./pages/**/!(*.test.[jt]sx)*.([jt]sx)", {
     eager: true,
   });
+  
+  console.log("[LTV Frontend] Parsed routing glob successfully", Object.keys(pages));
+
   const { t } = useTranslation();
 
   return (
-    <BrowserRouter>
-      <PolarisProvider>
+    <PolarisProvider>
+      <BrowserRouter>
         <QueryProvider>
           <NavMenu>
-            <Link to="/" rel="home" />
-            <Link to="/Logs">Logs</Link>
+            <a href="/" rel="home">Home</a>
+            <a href="/Logs">Logs</a>
           </NavMenu>
           <Routes pages={pages} />
         </QueryProvider>
-      </PolarisProvider>
-    </BrowserRouter>
+      </BrowserRouter>
+    </PolarisProvider>
   );
 }

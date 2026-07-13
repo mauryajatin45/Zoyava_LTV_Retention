@@ -14,9 +14,14 @@ export default function Index() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    console.log("[LTV Frontend] Index page mounted. Fetching /api/ltv-config...");
     fetch('/api/ltv-config')
-      .then((res) => res.json())
+      .then((res) => {
+        console.log("[LTV Frontend] Fetch response status:", res.status);
+        return res.json();
+      })
       .then((data) => {
+        console.log("[LTV Frontend] /api/ltv-config data received:", data);
         setLadderOld(data.ladderOld || data.ladder);
         setLadderV3(data.ladderV3 || null);
         setLadderV4(data.ladderV4 || null);
