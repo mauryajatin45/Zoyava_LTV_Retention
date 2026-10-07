@@ -18,51 +18,87 @@ export const pool = mysql.createPool({
   keepAliveInitialDelay: 10000,
 });
 
-// Initialize table on startup
-(async () => {
-  try {
-    const connection = await pool.getConnection();
-    logger.info(TAG, 'Connected to MySQL database');
+// ─────────────────────────────────────────────────────────────
+// Self-healing table setup
+// - Retries at startup (MySQL may still be booting after a VPS restart)
+// - Re-creates tables on demand if they ever go missing (ER_NO_SUCH_TABLE)
+// ─────────────────────────────────────────────────────────────
+const CREATE_PROCESSED_CHARGES = `
+  CREATE TABLE IF NOT EXISTS processed_charges (
+    charge_id    VARCHAR(255) PRIMARY KEY,
+    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_processed_at (processed_at)
+  )`;
 
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS processed_charges (
-        charge_id    VARCHAR(255) PRIMARY KEY,
-        processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_processed_at (processed_at)
-      )
-    `);
+const CREATE_WEBHOOK_LOGS = `
+  CREATE TABLE IF NOT EXISTS webhook_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    webhook_type VARCHAR(100),
+    charge_id VARCHAR(255),
+    address_id VARCHAR(255),
+    funnel_type VARCHAR(50),
+    cycle_number INT,
+    status ENUM('SUCCESS', 'FAILED', 'SKIPPED', 'PENDING'),
+    gifts_injected JSON,
+    next_charge_date DATE,
+    request_payload JSON,
+    response_payload JSON,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_address_id (address_id),
+    INDEX idx_status (status),
+    INDEX idx_created_at (created_at)
+  )`;
 
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS webhook_logs (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        webhook_type VARCHAR(100),
-        charge_id VARCHAR(255),
-        address_id VARCHAR(255),
-        funnel_type VARCHAR(50),
-        cycle_number INT,
-        status ENUM('SUCCESS', 'FAILED', 'SKIPPED', 'PENDING'),
-        gifts_injected JSON,
-        next_charge_date DATE,
-        request_payload JSON,
-        response_payload JSON,
-        error_message TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_address_id (address_id),
-        INDEX idx_status (status),
-        INDEX idx_created_at (created_at)
-      )
-    `);
+let tablesReady = null;
 
-    logger.info(TAG, 'processed_charges and webhook_logs tables verified/created');
-    connection.release();
-  } catch (err) {
-    // CRITICAL: if the DB is unreachable at startup we log it loudly
-    // but do NOT crash the server — webhooks will fail safely via try/catch
-    logger.error(TAG, 'STARTUP: Could not connect to MySQL. Idempotency checks will fail until DB is reachable.', {
-      host: process.env.DB_HOST,
-      db:   process.env.DB_NAME,
-      error: err.message,
+export function ensureTables() {
+  if (!tablesReady) {
+    tablesReady = (async () => {
+      await pool.query(CREATE_PROCESSED_CHARGES);
+      await pool.query(CREATE_WEBHOOK_LOGS);
+      logger.info(TAG, 'processed_charges and webhook_logs tables verified/created');
+    })().catch((err) => {
+      tablesReady = null; // allow the next call to retry
+      throw err;
     });
+  }
+  return tablesReady;
+}
+
+const isMissingTable = (err) => err && (err.code === 'ER_NO_SUCH_TABLE' || err.errno === 1146);
+
+/** Run a query; if the table is missing, recreate tables and retry once. */
+export async function safeQuery(sql, params) {
+  try {
+    return await pool.query(sql, params);
+  } catch (err) {
+    if (!isMissingTable(err)) throw err;
+    logger.warn(TAG, 'Table missing — recreating tables and retrying', { error: err.message });
+    tablesReady = null;
+    await ensureTables();
+    return await pool.query(sql, params);
+  }
+}
+
+// Startup: retry for ~2 minutes so a slow MySQL boot never leaves us without tables
+(async () => {
+  const delays = [2, 4, 8, 15, 30, 60];
+  for (let i = 0; i <= delays.length; i++) {
+    try {
+      await ensureTables();
+      logger.info(TAG, 'Connected to MySQL database');
+      return;
+    } catch (err) {
+      if (i === delays.length) {
+        logger.error(TAG, 'STARTUP: Could not prepare MySQL tables after retries. Will retry on first query.', {
+          host: process.env.DB_HOST, db: process.env.DB_NAME, error: err.message || String(err),
+        });
+        return;
+      }
+      logger.warn(TAG, `STARTUP: MySQL not ready (${err.code || err.message || err}) — retrying in ${delays[i]}s`);
+      await new Promise((r) => setTimeout(r, delays[i] * 1000));
+    }
   }
 })();
 
@@ -75,7 +111,7 @@ export const pool = mysql.createPool({
  * @returns {Promise<boolean>} true = first time seen (process it), false = duplicate (skip)
  */
 export async function claimCharge(chargeId) {
-  const [result] = await pool.query(
+  const [result] = await safeQuery(
     'INSERT IGNORE INTO processed_charges (charge_id) VALUES (?)',
     [String(chargeId)]
   );
@@ -93,7 +129,7 @@ export async function claimCharge(chargeId) {
  * @returns {Promise<boolean>} true = first time seen (process it), false = duplicate (skip)
  */
 export async function claimKey(key) {
-  const [result] = await pool.query(
+  const [result] = await safeQuery(
     'INSERT IGNORE INTO processed_charges (charge_id) VALUES (?)',
     [String(key)]
   );
@@ -105,7 +141,7 @@ export async function claimKey(key) {
  * Kept for backward compatibility with any direct callers.
  */
 export async function hasBeenProcessed(chargeId) {
-  const [rows] = await pool.query(
+  const [rows] = await safeQuery(
     'SELECT charge_id FROM processed_charges WHERE charge_id = ?',
     [String(chargeId)]
   );
@@ -116,7 +152,7 @@ export async function hasBeenProcessed(chargeId) {
  * @deprecated Use claimCharge() instead — it's atomic.
  */
 export async function markAsProcessed(chargeId) {
-  await pool.query(
+  await safeQuery(
     'INSERT IGNORE INTO processed_charges (charge_id) VALUES (?)',
     [String(chargeId)]
   );

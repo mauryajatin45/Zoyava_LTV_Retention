@@ -1,4 +1,4 @@
-import { pool } from './idempotency-store.js';
+import { safeQuery } from './idempotency-store.js';
 import { logger } from './logger.js';
 
 const TAG = '[WebhookLogger]';
@@ -47,7 +47,7 @@ export async function logWebhook(data) {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
-    await pool.query(query, [
+    await safeQuery(query, [
       webhook_type,
       String(charge_id),
       String(address_id),
@@ -82,7 +82,7 @@ export async function getWebhookLogs(limit = 50, offset = 0) {
 
     // pool.query using positional args with integers for LIMIT/OFFSET can sometimes be tricky depending on mysql2 config,
     // so we ensure they are parsed as numbers.
-    const [rows] = await pool.query(query, [Number(limit), Number(offset)]);
+    const [rows] = await safeQuery(query, [Number(limit), Number(offset)]);
     return rows;
   } catch (err) {
     logger.error(TAG, 'Failed to fetch webhook logs', { error: err.message });
